@@ -1,0 +1,3 @@
+return {
+    ["Othello"] = { fr = "Othello" },
+}
