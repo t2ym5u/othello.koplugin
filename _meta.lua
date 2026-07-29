@@ -1,6 +1,5 @@
 return {
-    name        = "othello",
-    version     = "1.1.8",
+    version     = "1.1.9",
     fullname    = "Othello",
     description = "Othello/Reversi 8x8 avec IA.",
 }
