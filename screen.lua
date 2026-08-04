@@ -122,6 +122,8 @@ function OthelloScreen:buildLayout()
         button_width = math.floor(sw * 0.92)
     end
 
+    self.status_text:setMaxWidth(is_landscape and button_width or board_frame_size)
+
     -- Title bar with Options menu
     local title_bar = self:buildTitleBar(_("Othello"), function()
         return {
