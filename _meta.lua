@@ -1,5 +1,6 @@
+local _ = require("gettext")
 return {
     version     = "1.1.11",
-    fullname    = "Othello",
-    description = "Othello/Reversi 8x8 avec IA.",
+    fullname    = _("Othello"),
+    description = _("Othello/Reversi 8x8 with AI."),
 }

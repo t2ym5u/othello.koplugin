@@ -127,7 +127,7 @@ function OthelloScreen:buildLayout()
     -- Title bar with Options menu
     local title_bar = self:buildTitleBar(_("Othello"), function()
         return {
-            { text = _("Nouveau"),                  callback = function() self:onNewGame() end },
+            { text = _("New"),                  callback = function() self:onNewGame() end },
             { text = self:_getPlayersButtonText(),  callback = function() self:openPlayersMenu() end },
             { text = self:_getColorButtonText(),    callback = function() self:openColorMenu() end },
             { text = self:_getDiffButtonText(),     callback = function() self:openDifficultyMenu() end },
@@ -140,7 +140,7 @@ function OthelloScreen:buildLayout()
         width                 = button_width,
         shrink_unneeded_width = true,
         buttons = {{
-            { text = _("Passer"),
+            { text = _("Pass"),
               callback = function() self:onPass() end },
         }},
     }
@@ -213,7 +213,7 @@ function OthelloScreen:onCellAction(r, c)
         -- Current player's turn was preserved (opponent had no moves)
         self.board_widget:refresh()
         self.plugin:saveState(self:serializeState())
-        self:showMessage(_("L'adversaire passe son tour !"), 2)
+        self:showMessage(_("Opponent passes their turn!"), 2)
         self:updateStatus()
         -- Check if AI would still need to play (shouldn't happen in skip case,
         -- but handle edge cases)
@@ -248,7 +248,7 @@ function OthelloScreen:onPass()
 
     local valid = board:getValidMoves(board.turn)
     if #valid > 0 then
-        self:showMessage(_("Vous avez des coups valides disponibles !"), 2)
+        self:showMessage(_("You have valid moves available!"), 2)
         return
     end
 
@@ -274,7 +274,7 @@ function OthelloScreen:triggerAI()
     if self.board.status ~= "playing" then return end
     if not self:_isAITurn() then return end
 
-    self:updateStatus(_("L'IA reflechit..."))
+    self:updateStatus(_("AI is thinking..."))
     local diff  = self.plugin:getSetting("difficulty", "medium")
     local depth = DIFF_DEPTH[diff] or 4
 
@@ -290,7 +290,7 @@ function OthelloScreen:triggerAI()
             self:onGameEnd()
         elseif result == "skip" then
             -- AI's turn was kept because opponent (human) had no moves
-            self:showMessage(_("Vous n'avez pas de coup valide, l'IA rejoue !"), 2)
+            self:showMessage(_("You have no valid move, the AI plays again!"), 2)
             self:updateStatus()
             -- AI plays again (schedule to avoid deep recursion)
             UIManager:scheduleIn(0.5, function() self:triggerAI() end)
@@ -324,11 +324,11 @@ function OthelloScreen:onGameEnd()
     local bc, wc = board:countDiscs()
     local msg
     if board.winner == "black" then
-        msg = string.format(_("Noirs gagnent ! %d - %d"), bc, wc)
+        msg = string.format(_("Black wins! %d - %d"), bc, wc)
     elseif board.winner == "white" then
-        msg = string.format(_("Blancs gagnent ! %d - %d"), wc, bc)
+        msg = string.format(_("White wins! %d - %d"), wc, bc)
     else
-        msg = string.format(_("Egalite ! %d - %d"), bc, wc)
+        msg = string.format(_("Tie! %d - %d"), bc, wc)
     end
     self:showMessage(msg, 4)
 end
@@ -345,26 +345,26 @@ function OthelloScreen:updateStatus(msg)
         local bc, wc = self.board:countDiscs()
         local winner = self.board.winner
         if winner == "black" then
-            status = string.format(_("Noirs gagnent ! Noirs: %d  Blancs: %d"), bc, wc)
+            status = string.format(_("Black wins! Black: %d  White: %d"), bc, wc)
         elseif winner == "white" then
-            status = string.format(_("Blancs gagnent ! Noirs: %d  Blancs: %d"), bc, wc)
+            status = string.format(_("White wins! Black: %d  White: %d"), bc, wc)
         else
-            status = string.format(_("Egalite ! Noirs: %d  Blancs: %d"), bc, wc)
+            status = string.format(_("Tie! Black: %d  White: %d"), bc, wc)
         end
     else
         local bc, wc  = self.board:countDiscs()
-        local turn    = (self.board.turn == "black") and _("Noirs") or _("Blancs")
+        local turn    = (self.board.turn == "black") and _("Black") or _("White")
         local players = self.plugin:getSetting("players", 1)
         local diff    = self.plugin:getSetting("difficulty", "medium")
         local dlabel  = MenuHelper.DIFFICULTY_LABELS[diff] or diff
         if players == 1 then
             local pcol     = self.plugin:getSetting("player_color", "black")
             local ai_col   = (pcol == "black") and "white" or "black"
-            local ai_label = (ai_col == "black") and _("(IA=Noirs)") or _("(IA=Blancs)")
-            status = string.format("%s joue  N: %d  B: %d  %s %s",
+            local ai_label = (ai_col == "black") and _("(AI=Black)") or _("(AI=White)")
+            status = string.format(_("%s to move  B: %d  W: %d  %s %s"),
                 turn, bc, wc, dlabel, ai_label)
         else
-            status = string.format("%s joue  Noirs: %d  Blancs: %d",
+            status = string.format(_("%s to move  Black: %d  White: %d"),
                 turn, bc, wc)
         end
     end
@@ -377,14 +377,14 @@ end
 
 function OthelloScreen:_getPlayersButtonText()
     local players = self.plugin:getSetting("players", 1)
-    return players == 1 and _("1 joueur") or _("2 joueurs")
+    return players == 1 and _("1 player") or _("2 players")
 end
 
 function OthelloScreen:_getColorButtonText()
     local players = self.plugin:getSetting("players", 1)
-    if players ~= 1 then return _("Couleur") end
+    if players ~= 1 then return _("Color") end
     local pcol = self.plugin:getSetting("player_color", "black")
-    return (pcol == "black") and _("Je=Noirs") or _("Je=Blancs")
+    return (pcol == "black") and _("I=Black") or _("I=White")
 end
 
 function OthelloScreen:_getDiffButtonText()
@@ -399,10 +399,10 @@ end
 
 function OthelloScreen:openPlayersMenu()
     MenuHelper.openPickerMenu{
-        title      = _("Mode de jeu"),
+        title      = _("Game mode"),
         items      = {
-            { id = 1, text = _("1 joueur (contre IA)") },
-            { id = 2, text = _("2 joueurs") },
+            { id = 1, text = _("1 player (vs AI)") },
+            { id = 2, text = _("2 players") },
         },
         current_id = self.plugin:getSetting("players", 1),
         on_select  = function(id)
@@ -421,14 +421,14 @@ end
 function OthelloScreen:openColorMenu()
     local players = self.plugin:getSetting("players", 1)
     if players ~= 1 then
-        self:showMessage(_("Uniquement disponible en mode 1 joueur."), 2)
+        self:showMessage(_("Only available in 1-player mode."), 2)
         return
     end
     MenuHelper.openPickerMenu{
-        title      = _("Votre couleur"),
+        title      = _("Your color"),
         items      = {
-            { id = "black", text = _("Noirs (joue en premier)") },
-            { id = "white", text = _("Blancs (joue en second)") },
+            { id = "black", text = _("Black (plays first)") },
+            { id = "white", text = _("White (plays second)") },
         },
         current_id = self.plugin:getSetting("player_color", "black"),
         on_select  = function(id)
