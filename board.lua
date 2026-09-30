@@ -399,6 +399,75 @@ local function applyMoveToGrid(grid, r, c, my_val, opp_val_local)
 end
 
 -- Minimax: maximiser = BLACK (1), minimiser = WHITE (2)
+-- Near the end there is no need to guess: the remaining tree is small enough
+-- to search to the last disc and play the move that provably wins. Below this
+-- many empty squares the engine stops evaluating and starts proving.
+-- 10, not more. At 13 the engine plays marginally better but one move took
+-- 10.8s on a desktop, which on an e-ink CPU is a minute of staring at the
+-- board; at 10 the worst measured move is 0.21s.
+local ENDGAME_EMPTIES = 10
+
+local function countEmpties(grid)
+    local n = 0
+    for r = 1, 8 do
+        for c = 1, 8 do
+            if grid[r][c] == 0 then n = n + 1 end
+        end
+    end
+    return n
+end
+
+-- Final disc difference from black's perspective. Scaled well clear of
+-- evaluateGrid's range so a proven result always outranks a guessed one.
+local ENDGAME_SCALE = 100000
+
+local function finalScore(grid)
+    local black, white = 0, 0
+    for r = 1, 8 do
+        for c = 1, 8 do
+            local v = grid[r][c]
+            if v == BLACK then black = black + 1
+            elseif v == WHITE then white = white + 1 end
+        end
+    end
+    return (black - white) * ENDGAME_SCALE
+end
+
+-- Plays the position out to the end; no depth limit, no evaluation.
+local function solveEndgame(grid, turn_val, alpha, beta)
+    local opp_val_local = oppVal(turn_val)
+    local moves = getMovesOnGrid(grid, turn_val, opp_val_local)
+
+    if #moves == 0 then
+        if #getMovesOnGrid(grid, opp_val_local, turn_val) == 0 then
+            return finalScore(grid)
+        end
+        return solveEndgame(grid, opp_val_local, alpha, beta)
+    end
+
+    if turn_val == BLACK then
+        local best = -INF
+        for _, m in ipairs(moves) do
+            local ng = applyMoveToGrid(grid, m[1], m[2], turn_val, opp_val_local)
+            local val = solveEndgame(ng, opp_val_local, alpha, beta)
+            if val > best then best = val end
+            if best > alpha then alpha = best end
+            if alpha >= beta then break end
+        end
+        return best
+    else
+        local best = INF
+        for _, m in ipairs(moves) do
+            local ng = applyMoveToGrid(grid, m[1], m[2], turn_val, opp_val_local)
+            local val = solveEndgame(ng, opp_val_local, alpha, beta)
+            if val < best then best = val end
+            if best < beta then beta = best end
+            if alpha >= beta then break end
+        end
+        return best
+    end
+end
+
 local function minimax(grid, turn_val, depth, alpha, beta)
     local opp_val_local = oppVal(turn_val)
     local moves  = getMovesOnGrid(grid, turn_val, opp_val_local)
@@ -458,19 +527,35 @@ function OthelloBoard:getAIMove(depth)
     local is_black  = (my_val == BLACK)
     local best_val  = is_black and -INF or INF
 
+    -- Once few enough squares are left, play it out exactly instead of
+    -- evaluating: the answer stops being an opinion.
+    local exact = countEmpties(self.grid) <= ENDGAME_EMPTIES
+
+    -- Carrying the best score so far in as alpha (or beta) is what makes the
+    -- root prune at all. Restarting every candidate at +/-INF, as this used
+    -- to, throws away every cutoff between siblings.
+    local alpha, beta = -INF, INF
+
     for _, m in ipairs(moves) do
         local ng  = applyMoveToGrid(self.grid, m[1], m[2], my_val, opp_val_local)
-        local val = minimax(ng, opp_val_local, depth - 1, -INF, INF)
+        local val
+        if exact then
+            val = solveEndgame(ng, opp_val_local, alpha, beta)
+        else
+            val = minimax(ng, opp_val_local, depth - 1, alpha, beta)
+        end
         if is_black then
             if val > best_val then
                 best_val  = val
                 best_move = m
             end
+            if best_val > alpha then alpha = best_val end
         else
             if val < best_val then
                 best_val  = val
                 best_move = m
             end
+            if best_val < beta then beta = best_val end
         end
     end
     return best_move
