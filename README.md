@@ -32,7 +32,7 @@ Place a disc to flip all straight lines of opponent discs between your new disc 
 |--------|-----|
 | Place a disc | Tap a valid cell |
 | Undo last move | Tap **Undo** |
-| New game | Tap **New** |
+| New game | Tap **New game** |
 | Show rules | Tap **Rules** |
 
 ## License

@@ -11,8 +11,6 @@ local function lrequire(name)
     return package.loaded[key]
 end
 
-local ButtonTable     = require("ui/widget/buttontable")
-local Device          = require("device")
 local FrameContainer  = require("ui/widget/container/framecontainer")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan  = require("ui/widget/horizontalspan")
@@ -21,14 +19,13 @@ local UIManager       = require("ui/uimanager")
 local VerticalGroup   = require("ui/widget/verticalgroup")
 local VerticalSpan    = require("ui/widget/verticalspan")
 local _               = require("i18n")
+local T               = require("ffi/util").template
 
 local MenuHelper  = require("menu_helper")
 local ScreenBase  = require("screen_base")
 
 local OthelloBoard       = lrequire("board")
 local OthelloBoardWidget = lrequire("board_widget")
-
-local DeviceScreen = Device.screen
 
 -- Difficulty → minimax depth
 local DIFF_DEPTH = { easy = 2, medium = 4, hard = 6 }
@@ -86,6 +83,11 @@ function OthelloScreen:init()
     end
 end
 
+-- A full board, or neither side able to move, ends the game.
+function OthelloScreen:isRoundOver()
+    return self.board.status ~= "playing"
+end
+
 function OthelloScreen:serializeState()
     return self.board:serialize()
 end
@@ -95,78 +97,62 @@ end
 -- ---------------------------------------------------------------------------
 
 function OthelloScreen:buildLayout()
-    local board = self.board
-
-    self.board_widget = OthelloBoardWidget:new{
-        board        = board,
-        onCellAction = function(r, c) self:onCellAction(r, c) end,
-    }
-
     local is_landscape = self:isLandscape()
-    local sw = DeviceScreen:getWidth()
-
-    local board_frame = FrameContainer:new{
-        padding = Size.padding.default,
-        margin  = Size.margin.default,
-        self.board_widget,
-    }
-
-    local board_frame_size = self.board_widget.size
-        + (Size.padding.default + Size.margin.default) * 2
-
-    local button_width
-    if is_landscape then
-        local right_w = sw - board_frame_size - Size.span.horizontal_default * 2
-        button_width  = math.max(right_w - Size.span.horizontal_default, 100)
-    else
-        button_width = math.floor(sw * 0.92)
-    end
-
-    self.status_text:setMaxWidth(is_landscape and button_width or board_frame_size)
 
     -- Title bar with Options menu
     local title_bar = self:buildTitleBar(_("Othello"), function()
-        return {
-            { text = _("New"),                  callback = function() self:onNewGame() end },
-            { text = self:_getPlayersButtonText(),  callback = function() self:openPlayersMenu() end },
-            { text = self:_getColorButtonText(),    callback = function() self:openColorMenu() end },
+        local items = {
+            { text = _("New game"),                 callback = function() self:onNewGame() end },
             { text = self:_getDiffButtonText(),     callback = function() self:openDifficultyMenu() end },
-            self:makeRulesButtonConfig(GAME_RULES_EN, GAME_RULES_FR),
+            { text = self:_getPlayersButtonText(),  callback = function() self:openPlayersMenu() end },
         }
+        -- The colour choice only means something against the AI.
+        if self.plugin:getSetting("players", 1) == 1 then
+            items[#items + 1] = { text = self:_getColorButtonText(),
+                                  callback = function() self:openColorMenu() end }
+        end
+        items[#items + 1] = self:makeRulesButtonConfig(GAME_RULES_EN, GAME_RULES_FR)
+        return items
     end)
 
-    -- Bottom button row: Pass
-    local bottom_buttons = ButtonTable:new{
-        width                 = button_width,
-        shrink_unneeded_width = true,
-        buttons = {{
-            { text = _("Pass"),
-              callback = function() self:onPass() end },
-        }},
+    local controls_w = self:getControlsWidth()
+    self.status_text:setMaxWidth(controls_w)
+    local controls = VerticalGroup:new{
+        align = "center",
+        self.status_text,
+        VerticalSpan:new{ width = Size.span.vertical_large },
+        self:buildActionBar({
+            { text = _("Pass"), callback = function() self:onPass() end },
+        }),
+    }
+
+    -- The widget paints its own thick outer border, so the frame only pads.
+    local frame_pad = Size.padding.default
+    local frame_extra = 2 * frame_pad
+    local budget_w, budget_h = self:getBoardBudget(title_bar, controls)
+    self.board_widget = OthelloBoardWidget:new{
+        board        = self.board,
+        max_size     = math.min(budget_w, budget_h) - frame_extra,
+        onCellAction = function(r, c) self:onCellAction(r, c) end,
+    }
+    local board_frame = FrameContainer:new{
+        padding    = frame_pad,
+        margin     = 0,
+        bordersize = 0,
+        self.board_widget,
     }
 
     if is_landscape then
-        local right_panel = VerticalGroup:new{
-            align = "center",
-            self.status_text,
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            bottom_buttons,
-        }
         local content = HorizontalGroup:new{
             align = "center",
             board_frame,
-            HorizontalSpan:new{ width = Size.span.horizontal_default },
-            right_panel,
+            HorizontalSpan:new{ width = self:getGutter() },
+            controls,
         }
         self:buildLandscapeLayout(title_bar, content)
     else
-        local content = VerticalGroup:new{
-            align = "center",
-            board_frame,
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            self.status_text,
-        }
-        self:buildPortraitLayout(title_bar, content, bottom_buttons)
+        self:buildPortraitLayout(title_bar, board_frame,
+            VerticalGroup:new{ align = "center", controls, VerticalSpan:new{ width = self:getGutter() } })
     end
     self:updateStatus()
 end
@@ -354,21 +340,21 @@ function OthelloScreen:updateStatus(msg)
     else
         local bc, wc  = self.board:countDiscs()
         local turn    = (self.board.turn == "black") and _("Black") or _("White")
-        local players = self.plugin:getSetting("players", 1)
-        local diff    = self.plugin:getSetting("difficulty", "medium")
-        local dlabel  = MenuHelper.DIFFICULTY_LABELS[diff] or diff
-        if players == 1 then
-            local pcol     = self.plugin:getSetting("player_color", "black")
-            local ai_col   = (pcol == "black") and "white" or "black"
-            local ai_label = (ai_col == "black") and _("(AI=Black)") or _("(AI=White)")
-            status = string.format(_("%s to move  B: %d  W: %d  %s %s"),
-                turn, bc, wc, dlabel, ai_label)
-        else
-            status = string.format(_("%s to move  Black: %d  White: %d"),
-                turn, bc, wc)
+        local dlabel
+        if self.plugin:getSetting("players", 1) == 1 then
+            local diff = self.plugin:getSetting("difficulty", "medium")
+            dlabel = MenuHelper.DIFFICULTY_LABELS[diff] or diff
         end
+        status = self:joinStatus(
+            T("%1×%1", 8),
+            dlabel,
+            T(_("%1 to move"), turn),
+            T(_("Black: %1"), bc),
+            T(_("White: %1"), wc))
     end
     ScreenBase.updateStatus(self, status)
+    -- Every move and pass (player's or AI's) ends here.
+    self:refreshActionBar()
 end
 
 -- ---------------------------------------------------------------------------
@@ -376,21 +362,17 @@ end
 -- ---------------------------------------------------------------------------
 
 function OthelloScreen:_getPlayersButtonText()
-    local players = self.plugin:getSetting("players", 1)
-    return players == 1 and _("1 player") or _("2 players")
+    return T(_("Players: %1"), self.plugin:getSetting("players", 1))
 end
 
 function OthelloScreen:_getColorButtonText()
-    local players = self.plugin:getSetting("players", 1)
-    if players ~= 1 then return _("Color") end
     local pcol = self.plugin:getSetting("player_color", "black")
-    return (pcol == "black") and _("I=Black") or _("I=White")
+    return T(_("Play as: %1"), (pcol == "black") and _("Black") or _("White"))
 end
 
 function OthelloScreen:_getDiffButtonText()
     local diff   = self.plugin:getSetting("difficulty", "medium")
-    local dlabel = MenuHelper.DIFFICULTY_LABELS[diff] or diff
-    return dlabel
+    return T(_("Difficulty: %1"), MenuHelper.DIFFICULTY_LABELS[diff] or diff)
 end
 
 -- ---------------------------------------------------------------------------
@@ -399,7 +381,7 @@ end
 
 function OthelloScreen:openPlayersMenu()
     MenuHelper.openPickerMenu{
-        title      = _("Game mode"),
+        title      = _("Players"),
         items      = {
             { id = 1, text = _("1 player (vs AI)") },
             { id = 2, text = _("2 players") },
@@ -425,7 +407,7 @@ function OthelloScreen:openColorMenu()
         return
     end
     MenuHelper.openPickerMenu{
-        title      = _("Your color"),
+        title      = _("Play as"),
         items      = {
             { id = "black", text = _("Black (plays first)") },
             { id = "white", text = _("White (plays second)") },
