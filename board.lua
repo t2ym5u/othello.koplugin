@@ -267,307 +267,366 @@ function OthelloBoard:load(data)
 end
 
 -- ---------------------------------------------------------------------------
--- AI — minimax with alpha-beta pruning
--- Evaluation is from black's perspective.
+-- AI — iterative-deepening alpha-beta (negamax) under a time budget
+--
+-- The search runs on a flat 10x10 array with a border of sentinels (square
+-- (r, c) is r * 10 + c) and plays/undoes moves in place, instead of copying
+-- the 8x8 grid at every node. Evaluation is unchanged and still from black's
+-- perspective; negamax just flips its sign for white.
 -- ---------------------------------------------------------------------------
 
--- Static evaluation of a grid state from black's perspective
-local function evaluateGrid(grid)
-    local score        = 0
-    local black_count  = 0
-    local white_count  = 0
-    local black_moves  = 0  -- mobility (counted below)
-    local white_moves  = 0
+-- Scales every time budget. A test harness sets it below 1 to reproduce on
+-- a desktop the depth an e-reader CPU (~25x slower) reaches in the budget.
+OthelloBoard.AI_TIME_SCALE = 1
 
-    -- Disc counts + positional bonuses
-    for r = 1, 8 do
-        for c = 1, 8 do
-            local v = grid[r][c]
-            if v == BLACK then
-                black_count = black_count + 1
-                local key = r * 10 + c
-                if CORNER_SET[key] then
-                    score = score + 30
-                elseif r == 1 or r == 8 or c == 1 or c == 8 then
-                    score = score + 5
-                end
-            elseif v == WHITE then
-                white_count = white_count + 1
-                local key = r * 10 + c
-                if CORNER_SET[key] then
-                    score = score - 30
-                elseif r == 1 or r == 8 or c == 1 or c == 8 then
-                    score = score - 5
-                end
-            end
-        end
+local clock = os.clock
+
+local EDGE  = 3          -- sentinel value around the board
+local FDIRS = { -11, -10, -9, -1, 1, 9, 10, 11 }
+
+-- Positional bonus per square, exactly as before: corners 30, edges 5.
+local SQ_BONUS = {}
+for r = 1, 8 do
+    for c = 1, 8 do
+        local b = 0
+        if CORNER_SET[r * 10 + c] then b = 30
+        elseif r == 1 or r == 8 or c == 1 or c == 8 then b = 5 end
+        SQ_BONUS[r * 10 + c] = b
     end
-
-    -- Disc count component
-    score = score + (black_count - white_count)
-
-    -- Mobility: count valid moves for each color
-    -- (we compute flips on the grid directly for speed)
-    local function countMovesForColor(my_val, opp_val_local)
-        local count = 0
-        for r = 1, 8 do
-            for c = 1, 8 do
-                if grid[r][c] == 0 then
-                    local valid = false
-                    for _, d in ipairs(DIRS) do
-                        local dr, dc = d[1], d[2]
-                        local nr, nc = r + dr, c + dc
-                        local found_opp = false
-                        while inBounds(nr, nc) and grid[nr][nc] == opp_val_local do
-                            found_opp = true
-                            nr = nr + dr
-                            nc = nc + dc
-                        end
-                        if found_opp and inBounds(nr, nc) and grid[nr][nc] == my_val then
-                            valid = true
-                            break
-                        end
-                    end
-                    if valid then count = count + 1 end
-                end
-            end
-        end
-        return count
-    end
-
-    black_moves = countMovesForColor(BLACK, WHITE)
-    white_moves = countMovesForColor(WHITE, BLACK)
-    score = score + (black_moves - white_moves) * 2
-
-    return score
 end
 
--- Get valid move positions for a color on a given grid
-local function getMovesOnGrid(grid, my_val, opp_val_local)
-    local moves = {}
-    for r = 1, 8 do
-        for c = 1, 8 do
-            if grid[r][c] == 0 then
-                for _, d in ipairs(DIRS) do
-                    local dr, dc = d[1], d[2]
-                    local nr, nc = r + dr, c + dc
-                    local found_opp = false
-                    while inBounds(nr, nc) and grid[nr][nc] == opp_val_local do
-                        found_opp = true
-                        nr = nr + dr
-                        nc = nc + dc
-                    end
-                    if found_opp and inBounds(nr, nc) and grid[nr][nc] == my_val then
-                        moves[#moves + 1] = { r, c }
-                        break
-                    end
+-- Squares in row-major order (the order the old engine tried moves in, which
+-- is also its tie-break between equally good moves).
+local SQUARES = {}
+for r = 1, 8 do
+    for c = 1, 8 do SQUARES[#SQUARES + 1] = r * 10 + c end
+end
+
+-- Move-ordering priority: corners first, then edges and the centre, the
+-- squares next to a corner last. Only affects speed, never the result.
+local ORDER_W = {
+    { 100, -20, 10,  5,  5, 10, -20, 100 },
+    { -20, -50, -2, -2, -2, -2, -50, -20 },
+    {  10,  -2,  1,  1,  1,  1,  -2,  10 },
+    {   5,  -2,  1,  0,  0,  1,  -2,   5 },
+    {   5,  -2,  1,  0,  0,  1,  -2,   5 },
+    {  10,  -2,  1,  1,  1,  1,  -2,  10 },
+    { -20, -50, -2, -2, -2, -2, -50, -20 },
+    { 100, -20, 10,  5,  5, 10, -20, 100 },
+}
+local ORDER = {}
+for i = 1, 64 do ORDER[i] = SQUARES[i] end
+table.sort(ORDER, function(a, b)
+    local wa = ORDER_W[math.floor(a / 10)][a % 10]
+    local wb = ORDER_W[math.floor(b / 10)][b % 10]
+    if wa ~= wb then return wa > wb end
+    return a < b
+end)
+
+-- Search state (one search at a time).
+local deadline  -- os.clock() value at which to stop, or nil (no limit)
+local aborted = false
+local nodes   = 0
+local fstack  = {}   -- squares flipped by the moves currently played
+local fsp     = 0
+
+local function timeUp()
+    nodes = nodes + 1
+    if deadline and nodes % 256 == 0 and clock() > deadline then
+        aborted = true
+    end
+    return aborted
+end
+
+local function isLegal(b, sq, me, op)
+    for k = 1, 8 do
+        local d = FDIRS[k]
+        local p = sq + d
+        if b[p] == op then
+            p = p + d
+            while b[p] == op do p = p + d end
+            if b[p] == me then return true end
+        end
+    end
+    return false
+end
+
+-- Legal moves of `me`, in ORDER; returns the list and its length.
+local function genMoves(b, me, op)
+    local moves, n = {}, 0
+    for i = 1, 64 do
+        local sq = ORDER[i]
+        if b[sq] == 0 and isLegal(b, sq, me, op) then
+            n = n + 1
+            moves[n] = sq
+        end
+    end
+    return moves, n
+end
+
+local function hasMove(b, me, op)
+    for i = 1, 64 do
+        local sq = SQUARES[i]
+        if b[sq] == 0 and isLegal(b, sq, me, op) then return true end
+    end
+    return false
+end
+
+local function countMoves(b, me, op)
+    local n = 0
+    for i = 1, 64 do
+        local sq = SQUARES[i]
+        if b[sq] == 0 and isLegal(b, sq, me, op) then n = n + 1 end
+    end
+    return n
+end
+
+-- Plays `me` on sq; returns how many discs flipped (pushed on fstack).
+local function makeMove(b, sq, me, op)
+    local n = 0
+    for k = 1, 8 do
+        local d = FDIRS[k]
+        local p = sq + d
+        if b[p] == op then
+            p = p + d
+            while b[p] == op do p = p + d end
+            if b[p] == me then
+                p = sq + d
+                while b[p] == op do
+                    b[p] = me
+                    fsp = fsp + 1
+                    fstack[fsp] = p
+                    n = n + 1
+                    p = p + d
                 end
             end
         end
     end
-    return moves
+    b[sq] = me
+    return n
 end
 
--- Apply a move to a grid copy; returns new grid
-local function applyMoveToGrid(grid, r, c, my_val, opp_val_local)
-    -- Deep copy grid
-    local ng = {}
-    for row = 1, 8 do
-        ng[row] = {}
-        for col = 1, 8 do
-            ng[row][col] = grid[row][col]
-        end
+local function unmakeMove(b, sq, n, op)
+    b[sq] = 0
+    for _ = 1, n do
+        b[fstack[fsp]] = op
+        fsp = fsp - 1
     end
-    ng[r][c] = my_val
-    -- Flip in all directions
-    for _, d in ipairs(DIRS) do
-        local dr, dc = d[1], d[2]
-        local nr, nc = r + dr, c + dc
-        local line   = {}
-        while inBounds(nr, nc) and ng[nr][nc] == opp_val_local do
-            line[#line + 1] = { nr, nc }
-            nr = nr + dr
-            nc = nc + dc
-        end
-        if #line > 0 and inBounds(nr, nc) and ng[nr][nc] == my_val then
-            for _, pos in ipairs(line) do
-                ng[pos[1]][pos[2]] = my_val
-            end
-        end
-    end
-    return ng
 end
 
--- Minimax: maximiser = BLACK (1), minimiser = WHITE (2)
+-- Static evaluation from black's perspective: disc difference, corner/edge
+-- bonuses and 2 x mobility difference (unchanged from the grid version).
+local function evaluate(b)
+    local score = 0
+    for i = 1, 64 do
+        local sq = SQUARES[i]
+        local v = b[sq]
+        if v == BLACK then
+            score = score + 1 + SQ_BONUS[sq]
+        elseif v == WHITE then
+            score = score - 1 - SQ_BONUS[sq]
+        end
+    end
+    return score + (countMoves(b, BLACK, WHITE) - countMoves(b, WHITE, BLACK)) * 2
+end
+
 -- Near the end there is no need to guess: the remaining tree is small enough
 -- to search to the last disc and play the move that provably wins. Below this
 -- many empty squares the engine stops evaluating and starts proving.
 -- 10, not more. At 13 the engine plays marginally better but one move took
 -- 10.8s on a desktop, which on an e-ink CPU is a minute of staring at the
--- board; at 10 the worst measured move is 0.21s.
+-- board. The solve also runs under the time budget now: if it cannot finish,
+-- the move comes from the heuristic search instead.
 local ENDGAME_EMPTIES = 10
 
-local function countEmpties(grid)
-    local n = 0
-    for r = 1, 8 do
-        for c = 1, 8 do
-            if grid[r][c] == 0 then n = n + 1 end
-        end
-    end
-    return n
-end
-
 -- Final disc difference from black's perspective. Scaled well clear of
--- evaluateGrid's range so a proven result always outranks a guessed one.
+-- evaluate's range so a proven result always outranks a guessed one.
 local ENDGAME_SCALE = 100000
 
-local function finalScore(grid)
-    local black, white = 0, 0
-    for r = 1, 8 do
-        for c = 1, 8 do
-            local v = grid[r][c]
-            if v == BLACK then black = black + 1
-            elseif v == WHITE then white = white + 1 end
-        end
+local function finalScore(b)
+    local d = 0
+    for i = 1, 64 do
+        local v = b[SQUARES[i]]
+        if v == BLACK then d = d + 1 elseif v == WHITE then d = d - 1 end
     end
-    return (black - white) * ENDGAME_SCALE
+    return d * ENDGAME_SCALE
 end
 
--- Plays the position out to the end; no depth limit, no evaluation.
-local function solveEndgame(grid, turn_val, alpha, beta)
-    local opp_val_local = oppVal(turn_val)
-    local moves = getMovesOnGrid(grid, turn_val, opp_val_local)
+local function sideSign(me) return me == BLACK and 1 or -1 end
 
-    if #moves == 0 then
-        if #getMovesOnGrid(grid, opp_val_local, turn_val) == 0 then
-            return finalScore(grid)
+-- Negamax: value for the side to move (`me`). depth < 0 means "play it out
+-- to the end" (exact endgame solve, no evaluation).
+local function search(b, me, op, depth, alpha, beta)
+    if timeUp() then return 0 end
+    if depth == 0 then return sideSign(me) * evaluate(b) end
+
+    local moves, n = genMoves(b, me, op)
+    if n == 0 then
+        if not hasMove(b, op, me) then
+            -- Nobody can move: the game is over.
+            if depth < 0 then return sideSign(me) * finalScore(b) end
+            return sideSign(me) * evaluate(b)
         end
-        return solveEndgame(grid, opp_val_local, alpha, beta)
+        -- Pass: the opponent plays (a pass costs a ply of depth).
+        return -search(b, op, me, depth < 0 and depth or depth - 1, -beta, -alpha)
     end
 
-    if turn_val == BLACK then
-        local best = -INF
-        for _, m in ipairs(moves) do
-            local ng = applyMoveToGrid(grid, m[1], m[2], turn_val, opp_val_local)
-            local val = solveEndgame(ng, opp_val_local, alpha, beta)
-            if val > best then best = val end
-            if best > alpha then alpha = best end
-            if alpha >= beta then break end
+    -- Far from the leaves, try first the moves that leave the opponent the
+    -- fewest replies: they are the likeliest to cut the rest off.
+    if n > 1 and (depth >= 3 or depth < 0) then
+        local key = {}
+        for i = 1, n do
+            local sq = moves[i]
+            local nf = makeMove(b, sq, me, op)
+            key[sq] = countMoves(b, op, me) * 128 + i
+            unmakeMove(b, sq, nf, op)
         end
-        return best
-    else
-        local best = INF
-        for _, m in ipairs(moves) do
-            local ng = applyMoveToGrid(grid, m[1], m[2], turn_val, opp_val_local)
-            local val = solveEndgame(ng, opp_val_local, alpha, beta)
-            if val < best then best = val end
-            if best < beta then beta = best end
-            if alpha >= beta then break end
-        end
-        return best
+        table.sort(moves, function(x, y) return key[x] < key[y] end)
     end
+
+    local best = -INF
+    local child = depth < 0 and depth or depth - 1
+    for i = 1, n do
+        local sq = moves[i]
+        local nf = makeMove(b, sq, me, op)
+        local v = -search(b, op, me, child, -beta, -alpha)
+        unmakeMove(b, sq, nf, op)
+        if aborted then return 0 end
+        if v > best then
+            best = v
+            if v > alpha then
+                alpha = v
+                if alpha >= beta then break end
+            end
+        end
+    end
+    return best
 end
 
-local function minimax(grid, turn_val, depth, alpha, beta)
-    local opp_val_local = oppVal(turn_val)
-    local moves  = getMovesOnGrid(grid, turn_val, opp_val_local)
-
-    if #moves == 0 then
-        -- Check if opponent can move
-        local opp_moves = getMovesOnGrid(grid, opp_val_local, turn_val)
-        if #opp_moves == 0 then
-            -- Terminal: count discs
-            return evaluateGrid(grid)
+-- One root iteration at `depth` (-1 = exact). `root` is the move list in
+-- search order (best of the previous iteration first). Ties are broken
+-- towards the lowest row-major square, like the old fixed-depth engine, so
+-- an unbudgeted search plays exactly the move it used to.
+-- Returns the best square of the moves fully searched (nil if none), and
+-- whether every move was searched.
+local function searchRoot(b, me, op, root, depth)
+    local best_sq, best_v = nil, -INF
+    local scores = {}
+    for i = 1, #root do
+        local sq = root[i]
+        local nf = makeMove(b, sq, me, op)
+        -- A square that would win a tie must prove it ties: search it with
+        -- a window one point lower so an equal score comes back exact.
+        local a = best_v
+        if best_sq and sq < best_sq then a = best_v - 1 end
+        local v = -search(b, op, me, depth < 0 and depth or depth - 1, -INF, -a)
+        unmakeMove(b, sq, nf, op)
+        if aborted then return best_sq, false, scores end
+        scores[sq] = v
+        if v > best_v or (v == best_v and best_sq and sq < best_sq) then
+            best_v, best_sq = v, sq
         end
-        -- Current player skips; opponent plays
-        if depth == 0 then return evaluateGrid(grid) end
-        return minimax(grid, opp_val_local, depth - 1, alpha, beta)
     end
+    return best_sq, true, scores
+end
 
-    if depth == 0 then
-        return evaluateGrid(grid)
-    end
-
-    if turn_val == BLACK then
-        local best = -INF
-        for _, m in ipairs(moves) do
-            local ng  = applyMoveToGrid(grid, m[1], m[2], turn_val, opp_val_local)
-            local val = minimax(ng, opp_val_local, depth - 1, alpha, beta)
-            if val > best then best = val end
-            if best > alpha then alpha = best end
-            if alpha >= beta then break end
-        end
-        return best
-    else
-        local best = INF
-        for _, m in ipairs(moves) do
-            local ng  = applyMoveToGrid(grid, m[1], m[2], turn_val, opp_val_local)
-            local val = minimax(ng, opp_val_local, depth - 1, alpha, beta)
-            if val < best then best = val end
-            if best < beta then beta = best end
-            if alpha >= beta then break end
-        end
-        return best
-    end
+-- Reorders root moves: best first, then by last iteration's score.
+local function reorderRoot(root, scores, best_sq)
+    table.sort(root, function(x, y)
+        if x == best_sq then return y ~= best_sq end
+        if y == best_sq then return false end
+        local sx, sy = scores[x] or -INF, scores[y] or -INF
+        if sx ~= sy then return sx > sy end
+        return false
+    end)
 end
 
 -- ---------------------------------------------------------------------------
 -- getAIMove — returns {r, c} or nil
+-- depth:  maximum search depth (the difficulty level).
+-- budget: seconds of thinking allowed (on the e-reader), or nil for no
+--         limit. Search deepens one ply at a time up to `depth` and keeps
+--         the best move of the deepest iteration that had time to finish.
 -- ---------------------------------------------------------------------------
 
-function OthelloBoard:getAIMove(depth)
+function OthelloBoard:getAIMove(depth, budget)
     depth = depth or 4
-    local color    = self.turn
-    local my_val   = colorVal(color)
-    local opp_val_local = oppVal(my_val)
-    local moves    = getMovesOnGrid(self.grid, my_val, opp_val_local)
-    if #moves == 0 then return nil end
+    local me = colorVal(self.turn)
+    local op = oppVal(me)
 
-    local best_move = nil
-    local is_black  = (my_val == BLACK)
-    local best_val  = is_black and -INF or INF
+    -- Flat copy of the grid.
+    local b = {}
+    for i = 0, 99 do b[i] = EDGE end
+    for r = 1, 8 do
+        for c = 1, 8 do b[r * 10 + c] = self.grid[r][c] end
+    end
+
+    local root = genMoves(b, me, op)
+    if #root == 0 then return nil end
+
+    local start = clock()
+    deadline = budget and (start + budget * OthelloBoard.AI_TIME_SCALE) or nil
+    aborted, nodes, fsp = false, 0, 0
+
+    -- Fallback if not even depth 1 finishes: the best-ordered legal move.
+    local best_sq = root[1]
+    self.ai_depth = 0
+
+    local empties = 0
+    for i = 1, 64 do
+        if b[SQUARES[i]] == 0 then empties = empties + 1 end
+    end
 
     -- Once few enough squares are left, play it out exactly instead of
-    -- evaluating: the answer stops being an opinion.
-    local exact = countEmpties(self.grid) <= ENDGAME_EMPTIES
-
-    -- Carrying the best score so far in as alpha (or beta) is what makes the
-    -- root prune at all. Restarting every candidate at +/-INF, as this used
-    -- to, throws away every cutoff between siblings.
-    local alpha, beta = -INF, INF
-
-    for _, m in ipairs(moves) do
-        local ng  = applyMoveToGrid(self.grid, m[1], m[2], my_val, opp_val_local)
-        local val
-        if exact then
-            val = solveEndgame(ng, opp_val_local, alpha, beta)
-        else
-            val = minimax(ng, opp_val_local, depth - 1, alpha, beta)
+    -- evaluating: the answer stops being an opinion. It gets most of the
+    -- budget; if it runs out, the heuristic search below takes over.
+    if empties <= ENDGAME_EMPTIES then
+        if budget then
+            deadline = start + budget * 0.7 * OthelloBoard.AI_TIME_SCALE
         end
-        if is_black then
-            if val > best_val then
-                best_val  = val
-                best_move = m
-            end
-            if best_val > alpha then alpha = best_val end
-        else
-            if val < best_val then
-                best_val  = val
-                best_move = m
-            end
-            if best_val < beta then beta = best_val end
+        local sq, complete = searchRoot(b, me, op, root, -1)
+        if complete then
+            self.ai_depth = -1
+            local r = math.floor(sq / 10)
+            return { r, sq - r * 10 }
+        end
+        aborted, fsp = false, 0
+        if budget then
+            deadline = start + budget * OthelloBoard.AI_TIME_SCALE
+        end
+        b = {}
+        for i = 0, 99 do b[i] = EDGE end
+        for r = 1, 8 do
+            for c = 1, 8 do b[r * 10 + c] = self.grid[r][c] end
         end
     end
-    return best_move
+
+    for d = 1, depth do
+        local sq, complete, scores = searchRoot(b, me, op, root, d)
+        if complete then
+            best_sq = sq
+            self.ai_depth = d
+            reorderRoot(root, scores, sq)
+        else
+            -- The previous best is searched first, so any move that beat it
+            -- in this unfinished iteration is a better-informed choice.
+            if sq and scores[root[1]] then best_sq = sq end
+            break
+        end
+    end
+
+    local r = math.floor(best_sq / 10)
+    return { r, best_sq - r * 10 }
 end
+
 
 -- ---------------------------------------------------------------------------
 -- applyAIMove — apply best AI move
 -- Returns "ok", "skip", "ended", or "none" (no moves available)
 -- ---------------------------------------------------------------------------
 
-function OthelloBoard:applyAIMove(depth)
-    local move = self:getAIMove(depth)
+function OthelloBoard:applyAIMove(depth, budget)
+    local move = self:getAIMove(depth, budget)
     if not move then
         -- AI has no valid move — this shouldn't happen if called at the right time,
         -- but handle it gracefully by advancing the turn

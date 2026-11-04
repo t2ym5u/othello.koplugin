@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0] - 2026-11-04
+
+### Changed
+- Much faster AI: it no longer copies the board for every position it looks
+  at, and it tries the most promising moves first. The same depth is
+  searched about 30x faster and plays exactly the same moves as before.
+- The AI now thinks for at most ~2 s per move on an e-reader (Easy 0.5 s,
+  Medium 1 s, Hard 2.2 s). Hard used to take up to several minutes on a
+  Kobo on some moves; it now reaches its full depth on about 97% of moves
+  within the time limit and one ply less on the rest. The exact endgame
+  solve also respects the limit, falling back to the normal search if it
+  cannot finish.
+
 ## [1.3.3] - 2026-11-03
 
 ### Changed
