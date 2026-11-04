@@ -29,6 +29,9 @@ local OthelloBoardWidget = lrequire("board_widget")
 
 -- Difficulty → minimax depth
 local DIFF_DEPTH = { easy = 2, medium = 4, hard = 6 }
+-- Difficulty → thinking budget in seconds (on the e-reader). The search
+-- deepens up to DIFF_DEPTH and plays the deepest result it finished in time.
+local DIFF_BUDGET = { easy = 0.5, medium = 1.0, hard = 2.2 }
 
 -- ---------------------------------------------------------------------------
 -- OthelloScreen
@@ -267,7 +270,7 @@ function OthelloScreen:triggerAI()
     UIManager:scheduleIn(0.05, function()
         if self.board.status ~= "playing" then return end
 
-        local result = self.board:applyAIMove(depth)
+        local result = self.board:applyAIMove(depth, DIFF_BUDGET[diff] or 1.0)
         self.board_widget:refresh()
         self.plugin:saveState(self:serializeState())
 
