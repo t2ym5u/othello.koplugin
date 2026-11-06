@@ -509,7 +509,10 @@ end
 -- an unbudgeted search plays exactly the move it used to.
 -- Returns the best square of the moves fully searched (nil if none), and
 -- whether every move was searched.
-local function searchRoot(b, me, op, root, depth)
+-- noise > 0: every move that could still be picked once a bonus below
+-- `noise` is added gets its exact score, not just a bound (moves more than
+-- `noise` below the best cannot be picked, so they keep a cheap bound).
+local function searchRoot(b, me, op, root, depth, noise)
     local best_sq, best_v = nil, -INF
     local scores = {}
     for i = 1, #root do
@@ -519,6 +522,7 @@ local function searchRoot(b, me, op, root, depth)
         -- a window one point lower so an equal score comes back exact.
         local a = best_v
         if best_sq and sq < best_sq then a = best_v - 1 end
+        if noise > 0 then a = best_v - noise end
         local v = -search(b, op, me, depth < 0 and depth or depth - 1, -INF, -a)
         unmakeMove(b, sq, nf, op)
         if aborted then return best_sq, false, scores end
@@ -542,15 +546,42 @@ local function reorderRoot(root, scores, best_sq)
 end
 
 -- ---------------------------------------------------------------------------
+-- Difficulty levels.
+-- depth:   deepest iteration of the heuristic search.
+-- budget:  thinking time in seconds on the e-reader (CPU time, so a slower
+--          device searches less deep instead of taking longer).
+-- noise:   a random bonus in [0, noise) added to each move's score before
+--          choosing, so a level does not answer a line the same way every
+--          game (a corner is worth 30, a disc 1).
+-- endgame: number of empty squares from which the position is played out
+--          exactly to the last disc (0 = never).
+-- Measured (Kobo-scaled budgets, randomised openings): Easy scores about
+-- 50% against a 1-ply greedy player, Medium about 95% against Easy and
+-- Hard about 70% against Medium.
+-- ---------------------------------------------------------------------------
+
+OthelloBoard.LEVELS = {
+    easy   = { depth = 2, budget = 0.5, noise = 100, endgame = 0 },
+    medium = { depth = 4, budget = 1.0, noise = 6,  endgame = 10 },
+    hard   = { depth = 6, budget = 2.2, noise = 0,  endgame = 10 },
+}
+
+-- ---------------------------------------------------------------------------
 -- getAIMove — returns {r, c} or nil
 -- depth:  maximum search depth (the difficulty level).
 -- budget: seconds of thinking allowed (on the e-reader), or nil for no
 --         limit. Search deepens one ply at a time up to `depth` and keeps
 --         the best move of the deepest iteration that had time to finish.
+-- opts:   optional { noise, endgame, rng } (see LEVELS; rng defaults to
+--         math.random). Without opts: no noise, exact endgame from 10.
 -- ---------------------------------------------------------------------------
 
-function OthelloBoard:getAIMove(depth, budget)
+function OthelloBoard:getAIMove(depth, budget, opts)
     depth = depth or 4
+    opts = opts or {}
+    local noise = opts.noise or 0
+    local endgame = opts.endgame or ENDGAME_EMPTIES
+    local rng = opts.rng or math.random
     local me = colorVal(self.turn)
     local op = oppVal(me)
 
@@ -580,11 +611,11 @@ function OthelloBoard:getAIMove(depth, budget)
     -- Once few enough squares are left, play it out exactly instead of
     -- evaluating: the answer stops being an opinion. It gets most of the
     -- budget; if it runs out, the heuristic search below takes over.
-    if empties <= ENDGAME_EMPTIES then
+    if empties <= endgame then
         if budget then
             deadline = start + budget * 0.7 * OthelloBoard.AI_TIME_SCALE
         end
-        local sq, complete = searchRoot(b, me, op, root, -1)
+        local sq, complete = searchRoot(b, me, op, root, -1, 0)
         if complete then
             self.ai_depth = -1
             local r = math.floor(sq / 10)
@@ -601,17 +632,33 @@ function OthelloBoard:getAIMove(depth, budget)
         end
     end
 
+    local exact = noise > 0
+    local final_scores
     for d = 1, depth do
-        local sq, complete, scores = searchRoot(b, me, op, root, d)
+        local sq, complete, scores = searchRoot(b, me, op, root, d, noise)
         if complete then
             best_sq = sq
             self.ai_depth = d
+            final_scores = scores
             reorderRoot(root, scores, sq)
+        elseif exact then
+            break
         else
             -- The previous best is searched first, so any move that beat it
             -- in this unfinished iteration is a better-informed choice.
             if sq and scores[root[1]] then best_sq = sq end
             break
+        end
+    end
+
+    -- Noise: pick the move with the best score plus a random bonus, from the
+    -- deepest iteration that searched every move.
+    if exact and final_scores then
+        local best_v = -INF
+        for i = 1, #root do
+            local sq = root[i]
+            local v = final_scores[sq] + rng() * noise
+            if v > best_v then best_v, best_sq = v, sq end
         end
     end
 
@@ -625,8 +672,8 @@ end
 -- Returns "ok", "skip", "ended", or "none" (no moves available)
 -- ---------------------------------------------------------------------------
 
-function OthelloBoard:applyAIMove(depth, budget)
-    local move = self:getAIMove(depth, budget)
+function OthelloBoard:applyAIMove(depth, budget, opts)
+    local move = self:getAIMove(depth, budget, opts)
     if not move then
         -- AI has no valid move — this shouldn't happen if called at the right time,
         -- but handle it gracefully by advancing the turn
