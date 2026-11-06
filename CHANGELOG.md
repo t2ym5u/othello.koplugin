@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-11-05
+
+### Changed
+- Easy is really easy now: it still looks two moves ahead but often picks
+  a weaker move, and it no longer plays the last 10 moves perfectly. Measured, it now wins about half of its games against a
+  player who just takes the best-looking move (it won 88% before).
+- Easy and Medium no longer play the same game twice: a line that beat
+  them once will not win every time. Medium varies only slightly, which
+  makes it a little weaker than before; Hard is unchanged.
+
 ## [1.4.2] - 2026-11-04
 
 ### Fixed

@@ -17,7 +17,8 @@ Place a disc to flip all straight lines of opponent discs between your new disc 
 - **Disc count** — live score for both players
 - **Undo** — take back the last move
 - **Auto-save** — game state saved and restored on next launch
-- **Exact endgame** — with 10 or fewer squares left the AI plays the position out to the last disc, so its finish is proven rather than estimated
+- **AI opponent, three levels** — Easy looks two moves ahead and often picks a weaker move, Medium looks four moves ahead with a little variety, Hard looks six moves ahead (at most ~2 s per move on an e-reader); Easy and Medium do not play the same game twice
+- **Exact endgame** — on Medium and Hard, with 10 or fewer squares left the AI plays the position out to the last disc, so its finish is proven rather than estimated
 
 ## Installation
 
