@@ -78,7 +78,7 @@ function OthelloScreen:init()
     ScreenBase.init(self)  -- calls buildLayout()
     -- Trigger AI if it's the AI's first turn
     if self:_isAITurn() then
-        UIManager:scheduleIn(0.1, function() self:triggerAI() end)
+        self:schedule(0.1, function() self:triggerAI() end)
     end
 end
 
@@ -263,8 +263,9 @@ function OthelloScreen:triggerAI()
     local diff  = self.plugin:getSetting("difficulty", "medium")
     local level = OthelloBoard.LEVELS[diff] or OthelloBoard.LEVELS.medium
 
-    UIManager:scheduleIn(0.05, function()
-        if self.board.status ~= "playing" then return end
+    self:schedule(0.05, function()
+        -- Re-checked: "2 players" may have been picked in the meantime.
+        if not self:_isAITurn() then return end
 
         local result = self.board:applyAIMove(level.depth, level.budget, level)
         self.board_widget:refresh()
@@ -278,7 +279,7 @@ function OthelloScreen:triggerAI()
             self:showMessage(_("You have no valid move, the AI plays again!"), 2)
             self:updateStatus()
             -- AI plays again (schedule to avoid deep recursion)
-            UIManager:scheduleIn(0.5, function() self:triggerAI() end)
+            self:schedule(0.5, function() self:triggerAI() end)
         else
             self:updateStatus()
         end
@@ -290,13 +291,14 @@ end
 -- ---------------------------------------------------------------------------
 
 function OthelloScreen:onNewGame()
+    self:cancelScheduled()  -- an AI move still pending belongs to the old game
     self.board = OthelloBoard:new()
     self.board:reset()
     self.plugin:saveState(self.board:serialize())
     self:buildLayout()
     UIManager:setDirty(self, function() return "ui", self.dimen end)
     if self:_isAITurn() then
-        UIManager:scheduleIn(0.1, function() self:triggerAI() end)
+        self:schedule(0.1, function() self:triggerAI() end)
     end
 end
 
